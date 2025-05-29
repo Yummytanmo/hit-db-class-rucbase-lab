@@ -85,7 +85,33 @@ void SmManager::drop_db(const std::string& db_name) {
  * @param {string&} db_name 数据库名称，与文件夹同名
  */
 void SmManager::open_db(const std::string& db_name) {
-    
+    if (!is_dir(db_name)) {
+        throw DatabaseNotFoundError(db_name);
+    }
+    // 进入数据库目录
+    if (chdir(db_name.c_str()) < 0) {
+        throw UnixError();
+    }
+
+    // 读取数据库元数据
+    std::ifstream ifs(DB_META_NAME);
+    if (!ifs) {
+        throw UnixError();
+    }
+    ifs >> db_;  // 利用重载的操作符>>读取元数据
+
+    // 打开所有表文件和索引文件
+    for (auto &entry : db_.tabs_) {
+        auto &tab = entry.second;
+        // 打开表数据文件
+        fhs_.emplace(tab.name, rm_manager_->open_file(tab.name));
+        
+        // 打开表上的所有索引文件
+        for (auto &index : tab.indexes) {
+            auto index_name = ix_manager_->get_index_name(tab.name, index.cols);
+            ihs_.emplace(index_name, ix_manager_->open_index(tab.name, index.cols));
+        }
+    }
 }
 
 /**
@@ -101,7 +127,29 @@ void SmManager::flush_meta() {
  * @description: 关闭数据库并把数据落盘
  */
 void SmManager::close_db() {
+    // 将元数据写入磁盘
+    flush_meta();
     
+    // 关闭所有表文件，同时会把脏页刷新到磁盘
+    for (auto &entry : fhs_) {
+        rm_manager_->close_file(entry.second.get());
+    }
+    fhs_.clear();
+
+    // 关闭所有索引文件，同时会把脏页刷新到磁盘
+    for (auto &entry : ihs_) {
+        ix_manager_->close_index(entry.second.get());
+    }
+    ihs_.clear();
+
+    // 清空数据库元数据
+    db_.name_.clear();
+    db_.tabs_.clear();
+
+    // 回到根目录
+    if (chdir("..") < 0) {
+        throw UnixError();
+    }
 }
 
 /**
@@ -188,7 +236,43 @@ void SmManager::create_table(const std::string& tab_name, const std::vector<ColD
  * @param {Context*} context
  */
 void SmManager::drop_table(const std::string& tab_name, Context* context) {
+    // 检查表是否存在
+    if (!db_.is_table(tab_name)) {
+        throw TableNotFoundError(tab_name);
+    }
+
+    TabMeta &tab = db_.get_table(tab_name);
+
+    // 删除表的所有索引文件
+    for (auto &index : tab.indexes) {
+        auto index_name = ix_manager_->get_index_name(tab_name, index.cols);
+        // 先关闭索引文件，这样可以确保所有脏页都写入磁盘
+        if (ihs_.count(index_name) > 0) {
+            ix_manager_->close_index(ihs_[index_name].get());
+            ihs_.erase(index_name);
+        }
+        // 删除索引文件
+        if (disk_manager_->is_file(index_name)) {
+            disk_manager_->destroy_file(index_name);
+        }
+    }
+
+    // 先关闭表文件，这样可以确保所有脏页都写入磁盘
+    if (fhs_.count(tab_name) > 0) {
+        rm_manager_->close_file(fhs_[tab_name].get());
+        fhs_.erase(tab_name);
+    }
     
+    // 删除表文件
+    if (disk_manager_->is_file(tab_name)) {
+        disk_manager_->destroy_file(tab_name);
+    }
+
+    // 从数据库元数据中删除该表
+    db_.tabs_.erase(tab_name);
+    
+    // 更新元数据到磁盘文件中
+    flush_meta();
 }
 
 /**
