@@ -71,4 +71,23 @@ class SeqScanExecutor : public AbstractExecutor {
     }
 
     Rid &rid() override { return rid_; }
+
+    bool is_end() const override { return true; }
+    
+    std::string getType() override { return "SeqScanExecutor"; }
+
+    size_t tupleLen() const override { return len_; }
+
+    const std::vector<ColMeta> &cols() const override { return cols_; }
+
+    private:
+    bool eval_cond(const RmRecord *rec, const Condition &cond, const std::vector<ColMeta> &rec_cols) {
+        return true;
+    }
+
+    bool eval_conds(const RmRecord *rec, const std::vector<Condition> &conds, const std::vector<ColMeta> &rec_cols) {
+        return std::all_of(conds.begin(), conds.end(),
+            [&](const Condition &cond) { return eval_cond(rec, cond, rec_cols); }
+        );
+    }
 };
