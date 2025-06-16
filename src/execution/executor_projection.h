@@ -39,17 +39,51 @@ class ProjectionExecutor : public AbstractExecutor {
         len_ = curr_offset;
     }
 
-    void beginTuple() override {}
+    void beginTuple() override {
+        // 使用执行器 prev_ 定位到子节点算子的第一条结果元组
+        prev_->beginTuple();
+    }
 
-    void nextTuple() override {}
+    void nextTuple() override {
+        // 使用执行器 prev_ 定位到子节点算子的下一条结果元组
+        prev_->nextTuple();
+    }
 
     std::unique_ptr<RmRecord> Next() override {
-        return nullptr;
+        // 1. 创建结果元组（RmRecord 类）
+        RmRecord result_record(len_);
+        
+        // 2. 将子节点算子的当前元组进行投影，填充结果元组
+        auto child_record = prev_->Next();
+        if (child_record == nullptr) {
+            return nullptr;
+        }
+        
+        // 获取子节点的列信息
+        auto &prev_cols = prev_->cols();
+        
+        // 根据 sel_idxs_ 复制需要投影的字段
+        for (size_t i = 0; i < sel_idxs_.size(); i++) {
+            size_t child_col_idx = sel_idxs_[i];
+            const auto &child_col = prev_cols[child_col_idx];
+            const auto &result_col = cols_[i];
+            
+            // 从子记录中复制数据到结果记录
+            memcpy(result_record.data + result_col.offset,
+                   child_record->data + child_col.offset,
+                   child_col.len);
+        }
+        
+        // 3. 返回结果元组指针
+        return std::make_unique<RmRecord>(std::move(result_record));
     }
 
     Rid &rid() override { return _abstract_rid; }
 
-    bool is_end() const override { return true; }
+    bool is_end() const override { 
+        // 使用执行器 prev_ 判断是否没有输入元组了
+        return prev_->is_end(); 
+    }
     
     std::string getType() override { return "ProjectionExecutor"; }
 
